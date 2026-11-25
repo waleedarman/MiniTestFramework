@@ -9,10 +9,11 @@ public class SampleTests {
 
     @MyTest
     public void loginTest() {
-        loggedIn = true;
-        if (!loggedIn) {
-            throw new AssertionError("Login should succeed");
+        // This sample has no authentication service; verify setup's logged-out state.
+        if (loggedIn) {
+            throw new AssertionError("Login should start logged out");
         }
+        loggedIn = true;
     }
 
     @MyTest(priority = 1)

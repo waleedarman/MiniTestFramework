@@ -1,6 +1,8 @@
+import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Comparator;
 
 public class MyTestRunner {
     public void run(Class<?> testClass) {
@@ -12,34 +14,10 @@ public class MyTestRunner {
             return;
         }
 
-        ArrayList<Method> tests = new ArrayList<>();
-        ArrayList<Method> beforeMethods = new ArrayList<>();
-        ArrayList<Method> afterMethods = new ArrayList<>();
-
-        for (Method method : testClass.getDeclaredMethods()) {
-            if (method.isAnnotationPresent(MyTest.class)) {
-                tests.add(method);
-            }
-            if (method.isAnnotationPresent(MyBeforeEach.class)) {
-                beforeMethods.add(method);
-            }
-            if (method.isAnnotationPresent(MyAfterEach.class)) {
-                afterMethods.add(method);
-            }
-        }
-
-        // Put lower priorities first.
-        for (int i = 0; i < tests.size() - 1; i++) {
-            for (int j = 0; j < tests.size() - 1 - i; j++) {
-                int firstPriority = tests.get(j).getAnnotation(MyTest.class).priority();
-                int nextPriority = tests.get(j + 1).getAnnotation(MyTest.class).priority();
-                if (firstPriority > nextPriority) {
-                    Method temp = tests.get(j);
-                    tests.set(j, tests.get(j + 1));
-                    tests.set(j + 1, temp);
-                }
-            }
-        }
+        ArrayList<Method> tests = findMethods(testClass, MyTest.class);
+        ArrayList<Method> beforeMethods = findMethods(testClass, MyBeforeEach.class);
+        ArrayList<Method> afterMethods = findMethods(testClass, MyAfterEach.class);
+        sortByPriority(tests);
 
         int passed = 0;
         int failed = 0;
@@ -52,33 +30,7 @@ public class MyTestRunner {
                 continue;
             }
 
-            String failure = null;
-            try {
-                for (Method before : beforeMethods) {
-                    before.setAccessible(true);
-                    before.invoke(instance);
-                }
-                test.setAccessible(true);
-                test.invoke(instance);
-            } catch (ReflectiveOperationException | RuntimeException exception) {
-                failure = failureMessage(exception);
-            } finally {
-                // Cleanup runs even if setup or the test throws an exception.
-                for (Method after : afterMethods) {
-                    try {
-                        after.setAccessible(true);
-                        after.invoke(instance);
-                    } catch (ReflectiveOperationException | RuntimeException exception) {
-                        String cleanupFailure = "AfterEach: " + failureMessage(exception);
-                        if (failure == null) {
-                            failure = cleanupFailure;
-                        } else {
-                            failure = failure + "; " + cleanupFailure;
-                        }
-                    }
-                }
-            }
-
+            String failure = runTest(instance, test, beforeMethods, afterMethods);
             if (failure == null) {
                 passed++;
                 System.out.println("PASS " + test.getName());
@@ -88,6 +40,65 @@ public class MyTestRunner {
             }
         }
 
+        printReport(passed, failed, skipped);
+    }
+
+    private ArrayList<Method> findMethods(Class<?> testClass,
+                                         Class<? extends Annotation> annotationType) {
+        ArrayList<Method> methods = new ArrayList<>();
+        for (Method method : testClass.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(annotationType)) {
+                methods.add(method);
+            }
+        }
+        return methods;
+    }
+
+    private void sortByPriority(ArrayList<Method> tests) {
+        tests.sort(Comparator.comparingInt(
+                method -> method.getAnnotation(MyTest.class).priority()));
+    }
+
+    private String runTest(Object instance, Method test, ArrayList<Method> beforeMethods,
+                           ArrayList<Method> afterMethods) {
+        String failure = null;
+        try {
+            for (Method before : beforeMethods) {
+                try {
+                    before.setAccessible(true);
+                    before.invoke(instance);
+                } catch (ReflectiveOperationException | RuntimeException exception) {
+                    failure = "BeforeEach: " + failureMessage(exception);
+                    break;
+                }
+            }
+
+            if (failure == null) {
+                test.setAccessible(true);
+                test.invoke(instance);
+            }
+        } catch (ReflectiveOperationException | RuntimeException exception) {
+            failure = failureMessage(exception);
+        } finally {
+            // Cleanup runs even if setup or the test throws an exception.
+            for (Method after : afterMethods) {
+                try {
+                    after.setAccessible(true);
+                    after.invoke(instance);
+                } catch (ReflectiveOperationException | RuntimeException exception) {
+                    String cleanupFailure = "AfterEach: " + failureMessage(exception);
+                    if (failure == null) {
+                        failure = cleanupFailure;
+                    } else {
+                        failure = failure + "; " + cleanupFailure;
+                    }
+                }
+            }
+        }
+        return failure;
+    }
+
+    private void printReport(int passed, int failed, int skipped) {
         System.out.println("Total: " + (passed + failed)
                 + " | Passed: " + passed + " | Failed: " + failed);
         System.out.println("Skipped: " + skipped);
@@ -95,8 +106,9 @@ public class MyTestRunner {
 
     private String failureMessage(Exception exception) {
         Throwable cause = exception;
-        if (exception instanceof InvocationTargetException) {
-            cause = ((InvocationTargetException) exception).getTargetException();
+        while (cause instanceof InvocationTargetException
+                && ((InvocationTargetException) cause).getTargetException() != null) {
+            cause = ((InvocationTargetException) cause).getTargetException();
         }
         if (cause.getMessage() == null) {
             return cause.getClass().getSimpleName();
